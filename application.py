@@ -3,7 +3,7 @@ import requests
 
 from flask import Flask, session, render_template, jsonify, request, redirect, url_for, flash
 from flask_session import Session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import scoped_session, sessionmaker
 from helpers import login_required
 from flask_login import login_required, current_user, login_user, logout_user, login_manager
@@ -19,7 +19,10 @@ Session(app)
 
 
 # Set up database
-engine = create_engine('postgres://uojpwnhprhgzqh:bdd53b5759b99c2c96a12c0cc64d5513cb7f528c861833cbfc635204f36ccc62@ec2-34-200-72-77.compute-1.amazonaws.com:5432/db6d25ronj41ru')
+DATABASE_URL = os.environ["DATABASE_URL"]  # set in the environment, never commit it
+if DATABASE_URL.startswith("postgres://"):   # SQLAlchemy 1.4+ needs the postgresql:// scheme
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+engine = create_engine(DATABASE_URL)
 db = scoped_session(sessionmaker(bind=engine))
 
 
@@ -54,12 +57,12 @@ def signup():
 
 
         # Make Sure that the username is not exist in the database
-        if db.execute("SELECT username FROM users WHERE username = :username", {"username": loginUser}).rowcount == 1:
+        if db.execute(text("SELECT username FROM users WHERE username = :username"), {"username": loginUser}).rowcount == 1:
             message = "Sorry, Username already exist"
             return render_template("signup.html", Signupmessage = message )
 
-        elif db.execute("SELECT username, password FROM users WHERE (username = :username AND password = :password)", {"username": loginUser, "password": loginPass}).rowcount == 0:
-            db.execute("INSERT INTO users (fullname, username, email, password) VALUES (:fullname, :username, :email, :password)",
+        elif db.execute(text("SELECT username, password FROM users WHERE (username = :username AND password = :password)"), {"username": loginUser, "password": loginPass}).rowcount == 0:
+            db.execute(text("INSERT INTO users (fullname, username, email, password) VALUES (:fullname, :username, :email, :password)"),
                         {"fullname":fullName, "username": loginUser, "email":emailId, "password": loginPass})
 
             message = "You have successfully Created your account. Please Go to login page"
@@ -89,7 +92,7 @@ def login():
             user = session['user']
 
 
-        if db.execute("SELECT username, password FROM users WHERE (username = :username AND password = :password)", {"username": loginUser, "password": loginPass}).rowcount == 0:
+        if db.execute(text("SELECT username, password FROM users WHERE (username = :username AND password = :password)"), {"username": loginUser, "password": loginPass}).rowcount == 0:
             message = "Invalid Username or Password"
             return render_template("login.html", Loginmessage = message)
         else:
@@ -110,7 +113,8 @@ def home():
         books = []
         message = ""
         searchValue = request.form.get("SearchText")
-        data = db.execute("SELECT * FROM books WHERE (isbn LIKE '%"+searchValue+"%') OR (title LIKE '%"+searchValue+"%') OR (author LIKE '%"+searchValue+"%') ")
+        pattern = "%" + (searchValue or "") + "%"
+        data = db.execute(text("SELECT * FROM books WHERE (isbn LIKE :p) OR (title LIKE :p) OR (author LIKE :p)"), {"p": pattern})
 
         for book in data:
             books.append(book)
@@ -126,24 +130,24 @@ def home():
 @app.route("/book/<string:isbn>", methods=["GET", "POST"])
 def book(isbn):
 
-    data = db.execute("SELECT * FROM books WHERE isbn = :isbn", {"isbn":isbn}).fetchone()
+    data = db.execute(text("SELECT * FROM books WHERE isbn = :isbn"), {"isbn":isbn}).fetchone()
     MessageCanNotSubmit = ""
     reviews = []
 
-    secondreview = db.execute("SELECT * FROM reviews WHERE username = :username AND isbn = :isbn", {"username": user, "isbn":isbn}).fetchone()
+    secondreview = db.execute(text("SELECT * FROM reviews WHERE username = :username AND isbn = :isbn"), {"username": user, "isbn":isbn}).fetchone()
 
     if request.method == "POST" and secondreview == None:
         review = request.form.get("review")
         rate = request.form.get("rate")
-        db.execute("INSERT INTO reviews (isbn, review, rating, username) VALUES (:isbn, :review, :rating, :username)", {"isbn":isbn, "review":review, "rating":rate, "username":user})
+        db.execute(text("INSERT INTO reviews (isbn, review, rating, username) VALUES (:isbn, :review, :rating, :username)"), {"isbn":isbn, "review":review, "rating":rate, "username":user})
         db.commit()
 
 
     if request.method == "POST" and secondreview != None:
         MessageCanNotSubmit = "Sorry, only one review is available for each user"
 
-    reviews = db.execute("SELECT * FROM reviews WHERE isbn = :isbn",{"isbn":isbn}).fetchall()
-    BookDetails = db.execute("SELECT * FROM books WHERE isbn = :isbn", {"isbn":isbn}).fetchall()
+    reviews = db.execute(text("SELECT * FROM reviews WHERE isbn = :isbn"),{"isbn":isbn}).fetchall()
+    BookDetails = db.execute(text("SELECT * FROM books WHERE isbn = :isbn"), {"isbn":isbn}).fetchall()
 
 
     res = requests.get("https://www.goodreads.com/book/review_counts.json", params={"key": "GVun9ybOiWrbqZ0GxQvZQ", "isbns": isbn})
@@ -161,7 +165,7 @@ def book(isbn):
 
 @app.route("/api/<string:isbn>", methods=["GET"])
 def api(isbn):
-    BookAPI = db.execute("SELECT * FROM books WHERE isbn = :isbn", {"isbn":isbn}).fetchone()
+    BookAPI = db.execute(text("SELECT * FROM books WHERE isbn = :isbn"), {"isbn":isbn}).fetchone()
     if BookAPI is None:
         return jsonify({"Error": "Invalid ISBN"}), 404
 
