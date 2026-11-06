@@ -4,6 +4,7 @@ import requests
 from flask import Flask, session, render_template, jsonify, request, redirect, url_for, flash
 from flask_session import Session
 from sqlalchemy import create_engine, text
+from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy.orm import scoped_session, sessionmaker
 from helpers import login_required
 from flask_login import login_required, current_user, login_user, logout_user, login_manager
@@ -24,6 +25,22 @@ if DATABASE_URL.startswith("postgres://"):   # SQLAlchemy 1.4+ needs the postgre
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 engine = create_engine(DATABASE_URL)
 db = scoped_session(sessionmaker(bind=engine))
+
+
+def verify_login(username, password):
+    """Check a password against its hash. Old plain-text rows still work once and are upgraded to a hash."""
+    row = db.execute(text("SELECT password FROM users WHERE username = :username"), {"username": username}).fetchone()
+    if row is None or password is None:
+        return False
+    stored = row[0] or ""
+    if stored.startswith(("scrypt:", "pbkdf2:")):
+        return check_password_hash(stored, password)
+    if stored == password:  # legacy plain-text password: accept, then store a hash
+        db.execute(text("UPDATE users SET password = :h WHERE username = :username"),
+                   {"h": generate_password_hash(password), "username": username})
+        db.commit()
+        return True
+    return False
 
 
 @app.route("/")
@@ -61,9 +78,9 @@ def signup():
             message = "Sorry, Username already exist"
             return render_template("signup.html", Signupmessage = message )
 
-        elif db.execute(text("SELECT username, password FROM users WHERE (username = :username AND password = :password)"), {"username": loginUser, "password": loginPass}).rowcount == 0:
+        else:
             db.execute(text("INSERT INTO users (fullname, username, email, password) VALUES (:fullname, :username, :email, :password)"),
-                        {"fullname":fullName, "username": loginUser, "email":emailId, "password": loginPass})
+                        {"fullname":fullName, "username": loginUser, "email":emailId, "password": generate_password_hash(loginPass)})
 
             message = "You have successfully Created your account. Please Go to login page"
             db.commit()
@@ -92,7 +109,7 @@ def login():
             user = session['user']
 
 
-        if db.execute(text("SELECT username, password FROM users WHERE (username = :username AND password = :password)"), {"username": loginUser, "password": loginPass}).rowcount == 0:
+        if not verify_login(loginUser, loginPass):
             message = "Invalid Username or Password"
             return render_template("login.html", Loginmessage = message)
         else:
